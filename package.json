@@ -12,7 +12,7 @@
     "build": "wxt zip && bash scripts/copy-extension-to-desktop.sh",
     "build:h5": "vite build",
     "build:all": "npm run build && npm run build:h5 && bash scripts/copy-extension-to-desktop.sh",
-    "pages:deploy": "npm run build:h5 && npx wrangler pages deploy dist --project-name=hoardly --branch=main",
+    "pages:deploy": "npm run build:h5 && npx wrangler pages deploy dist --project-name=hoardly-app --branch=main",
     "preview:h5": "vite preview --host 127.0.0.1 --port 4173",
     "chrome:open": "bash scripts/open-chrome-with-hoardly.sh",
     "zip": "wxt zip && bash scripts/copy-extension-to-desktop.sh",

@@ -31,4 +31,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: b867a30682bc6297007d54874b8b29dd
-          command: pages deploy dist --project-name=hoardly --branch=main
+          command: pages deploy dist --project-name=hoardly-app --branch=main
