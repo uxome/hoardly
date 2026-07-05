@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "wxt",
     "dev:h5": "vite --host 127.0.0.1 --port 5173",
+    "postinstall": "wxt prepare",
     "build": "wxt zip && bash scripts/copy-extension-to-desktop.sh",
     "build:h5": "vite build",
     "build:all": "npm run build && npm run build:h5 && bash scripts/copy-extension-to-desktop.sh",

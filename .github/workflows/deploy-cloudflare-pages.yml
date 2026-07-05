@@ -24,10 +24,11 @@ jobs:
           cache: npm
 
       - run: npm ci
+      - run: npx wxt prepare
       - run: npm run build:h5
 
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          accountId: b867a30682bc6297007d54874b8b29dd
           command: pages deploy dist --project-name=hoardly --branch=main
