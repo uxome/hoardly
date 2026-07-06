@@ -337,108 +337,82 @@ function HoardlyWebApp() {
       return;
     }
 
-    // Phase 1 (sync): generate local tags immediately
-    let enrichedLibrary = result.library;
-    if (isUrl) {
-      const card = result.card;
-      const taggerInput = cardToTaggerInput(card);
-      const tagResult = generateLocalTags(taggerInput, enrichedLibrary.tags);
-
-      const mergedTags = [...enrichedLibrary.tags];
-      for (const t of tagResult.newTags) {
-        if (!mergedTags.some((et) => et.id === t.id)) mergedTags.push(t);
-      }
-      const allTagIds = Array.from(new Set([...card.tagIds, ...tagResult.tagIds]));
-
-      enrichedLibrary = {
-        ...enrichedLibrary,
-        tags: mergedTags,
-        cards: enrichedLibrary.cards.map((c) =>
-          c.id === card.id ? { ...c, tagIds: allTagIds, parseStatus: "ready" as const } : c,
-        ),
-      };
-    }
-
-    setLibrary(enrichedLibrary);
+    setLibrary(result.library);
     setDrawerCardId(result.card.id);
     setNewCardValue("");
-    setNotice({ message: isUrl ? "已收藏，正在获取网页详情…" : "已创建笔记卡片。" });
 
-    // Phase 2 (async background): fetch OG metadata to enhance title/desc/image
     if (isUrl) {
-      void fetchAndEnrichMetadata(result.card.id, value);
+      setNotice({ message: "正在解析网页…" });
+      void fetchAndEnrichCard(result.card.id, value);
+    } else {
+      setNotice({ message: "已创建笔记卡片。" });
     }
   };
 
-  const fetchAndEnrichMetadata = async (cardId: string, url: string) => {
-    let title: string | undefined;
-    let description: string | undefined;
-    let ogImage: string | undefined;
+  const fetchAndEnrichCard = async (cardId: string, url: string) => {
+    type MicrolinkData = {
+      title?: string;
+      description?: string;
+      image?: { url?: string } | null;
+      logo?: { url?: string } | null;
+    };
+
+    let meta: MicrolinkData | null = null;
 
     try {
-      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-      const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(6000) });
+      const apiUrl = `https://api.microlink.io/?url=${encodeURIComponent(url)}&meta=true`;
+      const resp = await fetch(apiUrl, { signal: AbortSignal.timeout(10000) });
       if (resp.ok) {
-        const html = await resp.text();
-        const getMetaContent = (nameOrProp: string) => {
-          const r1 = new RegExp(`<meta[^>]+(?:name|property)=["']${nameOrProp}["'][^>]+content=["']([^"']+)["']`, "i");
-          const r2 = new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']${nameOrProp}["']`, "i");
-          return r1.exec(html)?.[1] || r2.exec(html)?.[1];
-        };
-        title = getMetaContent("og:title") || getMetaContent("twitter:title") || /<title[^>]*>([^<]+)<\/title>/i.exec(html)?.[1]?.trim();
-        description = getMetaContent("og:description") || getMetaContent("description") || getMetaContent("twitter:description");
-        ogImage = getMetaContent("og:image") || getMetaContent("twitter:image");
-        if (ogImage && !/^https?:\/\//i.test(ogImage)) {
-          try { ogImage = new URL(ogImage, url).href; } catch { ogImage = undefined; }
+        const json = await resp.json() as { status: string; data?: MicrolinkData };
+        if (json.status === "success" && json.data) {
+          meta = json.data;
         }
       }
-    } catch { /* network unavailable, tags already generated in Phase 1 */ }
-
-    if (!title && !description && !ogImage) return;
+    } catch { /* timeout or network error */ }
 
     setLibrary((prev) => {
       const card = prev.cards.find((c) => c.id === cardId);
       if (!card) return prev;
 
-      let updatedLibrary = prev;
+      const title = meta?.title || card.titleOriginal;
+      const description = meta?.description;
+      const ogImage = meta?.image?.url || meta?.logo?.url;
 
-      // Re-run tag generation with enriched title for better tags
-      if (title || description) {
-        const enrichedInput = cardToTaggerInput({
-          ...card,
-          titleOriginal: title || card.titleOriginal,
-          summary: description ? { en: description, "zh-CN": description } : card.summary,
-        });
-        const tagResult = generateLocalTags(enrichedInput, prev.tags);
+      const enrichedInput = cardToTaggerInput({
+        ...card,
+        titleOriginal: title,
+        summary: description ? { en: description, "zh-CN": description } : card.summary,
+      });
+      const tagResult = generateLocalTags(enrichedInput, prev.tags);
 
-        const mergedTags = [...prev.tags];
-        for (const t of tagResult.newTags) {
-          if (!mergedTags.some((et) => et.id === t.id)) mergedTags.push(t);
-        }
-        const allTagIds = Array.from(new Set([...card.tagIds, ...tagResult.tagIds]));
-
-        updatedLibrary = { ...prev, tags: mergedTags, cards: prev.cards.map((c) =>
-          c.id === cardId ? { ...c, tagIds: allTagIds } : c,
-        )};
+      const mergedTags = [...prev.tags];
+      for (const t of tagResult.newTags) {
+        if (!mergedTags.some((et) => et.id === t.id)) mergedTags.push(t);
       }
+      const allTagIds = Array.from(new Set([...card.tagIds, ...tagResult.tagIds]));
 
       return {
-        ...updatedLibrary,
-        cards: updatedLibrary.cards.map((c) =>
+        ...prev,
+        tags: mergedTags,
+        cards: prev.cards.map((c) =>
           c.id === cardId
             ? {
                 ...c,
-                titleOriginal: title || c.titleOriginal,
-                titleI18n: title ? { en: title, "zh-CN": title } : c.titleI18n,
-                summary: description ? { en: description, "zh-CN": description } : c.summary,
+                titleOriginal: title,
+                titleI18n: { en: title, "zh-CN": title },
+                summary: description
+                  ? { en: description, "zh-CN": description }
+                  : c.summary,
                 thumbnailUrl: ogImage || c.thumbnailUrl,
+                tagIds: allTagIds,
+                parseStatus: "ready" as const,
               }
             : c,
         ),
       };
     });
 
-    if (title) setNotice({ message: `已获取：${title}` });
+    setNotice({ message: meta?.title ? `已解析：${meta.title}` : "解析完成。" });
   };
 
   const createProject = () => {
