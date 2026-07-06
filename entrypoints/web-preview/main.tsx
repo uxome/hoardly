@@ -324,39 +324,66 @@ function HoardlyWebApp() {
       title: isUrl ? getHostname(value) : value.slice(0, 80),
       url: isUrl ? value : undefined,
     });
-    setLibrary(result.library);
+
+    if (result.status !== "created") {
+      setLibrary(result.library);
+      setDrawerCardId(result.card.id);
+      setNewCardValue("");
+      setNotice({
+        message: result.status === "duplicate"
+          ? "该链接已在库中，已打开已有卡片。"
+          : "该链接已在回收站，已恢复已有卡片。",
+      });
+      return;
+    }
+
+    // Phase 1 (sync): generate local tags immediately
+    let enrichedLibrary = result.library;
+    if (isUrl) {
+      const card = result.card;
+      const taggerInput = cardToTaggerInput(card);
+      const tagResult = generateLocalTags(taggerInput, enrichedLibrary.tags);
+
+      const mergedTags = [...enrichedLibrary.tags];
+      for (const t of tagResult.newTags) {
+        if (!mergedTags.some((et) => et.id === t.id)) mergedTags.push(t);
+      }
+      const allTagIds = Array.from(new Set([...card.tagIds, ...tagResult.tagIds]));
+
+      enrichedLibrary = {
+        ...enrichedLibrary,
+        tags: mergedTags,
+        cards: enrichedLibrary.cards.map((c) =>
+          c.id === card.id ? { ...c, tagIds: allTagIds, parseStatus: "ready" as const } : c,
+        ),
+      };
+    }
+
+    setLibrary(enrichedLibrary);
     setDrawerCardId(result.card.id);
     setNewCardValue("");
+    setNotice({ message: isUrl ? "已收藏，正在获取网页详情…" : "已创建笔记卡片。" });
 
-    if (result.status === "created" && isUrl) {
-      setNotice({ message: "正在解析网页信息…" });
-      void enrichNewCard(result.card.id, value, result.library);
-    } else {
-      setNotice({
-        message:
-          result.status === "duplicate"
-            ? "该链接已在库中，已打开已有卡片。"
-            : result.status === "restored"
-              ? "该链接已在回收站，已恢复已有卡片。"
-              : "已创建笔记卡片。",
-      });
+    // Phase 2 (async background): fetch OG metadata to enhance title/desc/image
+    if (isUrl) {
+      void fetchAndEnrichMetadata(result.card.id, value);
     }
   };
 
-  const enrichNewCard = async (cardId: string, url: string, currentLibrary: HoardlyLibraryState) => {
+  const fetchAndEnrichMetadata = async (cardId: string, url: string) => {
     let title: string | undefined;
     let description: string | undefined;
     let ogImage: string | undefined;
 
     try {
       const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-      const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
+      const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(6000) });
       if (resp.ok) {
         const html = await resp.text();
-        const getMetaContent = (nameOrProperty: string) => {
-          const re = new RegExp(`<meta[^>]+(?:name|property)=["']${nameOrProperty}["'][^>]+content=["']([^"']+)["']`, "i");
-          const alt = new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']${nameOrProperty}["']`, "i");
-          return re.exec(html)?.[1] || alt.exec(html)?.[1];
+        const getMetaContent = (nameOrProp: string) => {
+          const r1 = new RegExp(`<meta[^>]+(?:name|property)=["']${nameOrProp}["'][^>]+content=["']([^"']+)["']`, "i");
+          const r2 = new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']${nameOrProp}["']`, "i");
+          return r1.exec(html)?.[1] || r2.exec(html)?.[1];
         };
         title = getMetaContent("og:title") || getMetaContent("twitter:title") || /<title[^>]*>([^<]+)<\/title>/i.exec(html)?.[1]?.trim();
         description = getMetaContent("og:description") || getMetaContent("description") || getMetaContent("twitter:description");
@@ -365,47 +392,53 @@ function HoardlyWebApp() {
           try { ogImage = new URL(ogImage, url).href; } catch { ogImage = undefined; }
         }
       }
-    } catch { /* network error, continue with heuristic tags */ }
+    } catch { /* network unavailable, tags already generated in Phase 1 */ }
+
+    if (!title && !description && !ogImage) return;
 
     setLibrary((prev) => {
       const card = prev.cards.find((c) => c.id === cardId);
       if (!card) return prev;
 
-      const input = cardToTaggerInput({
-        ...card,
-        titleOriginal: title || card.titleOriginal,
-        summary: description ? { en: description, "zh-CN": description } : card.summary,
-      });
-      const tagResult = generateLocalTags(input, prev.tags);
+      let updatedLibrary = prev;
 
-      const mergedTags = [...prev.tags];
-      for (const t of tagResult.newTags) {
-        if (!mergedTags.some((et) => et.id === t.id)) mergedTags.push(t);
+      // Re-run tag generation with enriched title for better tags
+      if (title || description) {
+        const enrichedInput = cardToTaggerInput({
+          ...card,
+          titleOriginal: title || card.titleOriginal,
+          summary: description ? { en: description, "zh-CN": description } : card.summary,
+        });
+        const tagResult = generateLocalTags(enrichedInput, prev.tags);
+
+        const mergedTags = [...prev.tags];
+        for (const t of tagResult.newTags) {
+          if (!mergedTags.some((et) => et.id === t.id)) mergedTags.push(t);
+        }
+        const allTagIds = Array.from(new Set([...card.tagIds, ...tagResult.tagIds]));
+
+        updatedLibrary = { ...prev, tags: mergedTags, cards: prev.cards.map((c) =>
+          c.id === cardId ? { ...c, tagIds: allTagIds } : c,
+        )};
       }
 
-      const allTagIds = Array.from(new Set([...card.tagIds, ...tagResult.tagIds]));
-
       return {
-        ...prev,
-        tags: mergedTags,
-        cards: prev.cards.map((c) =>
+        ...updatedLibrary,
+        cards: updatedLibrary.cards.map((c) =>
           c.id === cardId
             ? {
                 ...c,
                 titleOriginal: title || c.titleOriginal,
                 titleI18n: title ? { en: title, "zh-CN": title } : c.titleI18n,
-                summary: description
-                  ? { en: description, "zh-CN": description }
-                  : c.summary,
+                summary: description ? { en: description, "zh-CN": description } : c.summary,
                 thumbnailUrl: ogImage || c.thumbnailUrl,
-                tagIds: allTagIds,
-                parseStatus: "ready" as const,
               }
             : c,
         ),
       };
     });
-    setNotice({ message: title ? `已解析：${title}` : "解析完成，已生成标签。" });
+
+    if (title) setNotice({ message: `已获取：${title}` });
   };
 
   const createProject = () => {
