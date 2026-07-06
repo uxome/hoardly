@@ -386,62 +386,74 @@ function HoardlyWebApp() {
       logo?: { url?: string } | null;
     };
 
+    // Step 1: Fetch page metadata via Microlink
     let meta: MicrolinkData | null = null;
-
     try {
       const apiUrl = `https://api.microlink.io/?url=${encodeURIComponent(url)}&meta=true`;
       const resp = await fetch(apiUrl, { signal: AbortSignal.timeout(10000) });
       if (resp.ok) {
         const json = await resp.json() as { status: string; data?: MicrolinkData };
-        if (json.status === "success" && json.data) {
-          meta = json.data;
-        }
+        if (json.status === "success" && json.data) meta = json.data;
       }
     } catch { /* timeout or network error */ }
 
-    setLibrary((prev) => {
-      const card = prev.cards.find((c) => c.id === cardId);
-      if (!card) return prev;
+    const title = meta?.title;
+    const description = meta?.description;
+    const ogImage = meta?.image?.url || meta?.logo?.url;
 
-      const title = meta?.title || card.titleOriginal;
-      const description = meta?.description;
-      const ogImage = meta?.image?.url || meta?.logo?.url;
-
-      const enrichedInput = cardToTaggerInput({
-        ...card,
-        titleOriginal: title,
-        summary: description ? { en: description, "zh-CN": description } : card.summary,
-      });
-      const tagResult = generateLocalTags(enrichedInput, prev.tags);
-
-      const mergedTags = [...prev.tags];
-      for (const t of tagResult.newTags) {
-        if (!mergedTags.some((et) => et.id === t.id)) mergedTags.push(t);
-      }
-      const allTagIds = Array.from(new Set([...card.tagIds, ...tagResult.tagIds]));
-
-      return {
+    // Step 2: Update card with metadata
+    if (title || description || ogImage) {
+      setLibrary((prev) => ({
         ...prev,
-        tags: mergedTags,
         cards: prev.cards.map((c) =>
           c.id === cardId
             ? {
                 ...c,
-                titleOriginal: title,
-                titleI18n: { en: title, "zh-CN": title },
-                summary: description
-                  ? { en: description, "zh-CN": description }
-                  : c.summary,
+                titleOriginal: title || c.titleOriginal,
+                titleI18n: title ? { en: title, "zh-CN": title } : c.titleI18n,
+                summary: description ? { en: description, "zh-CN": description } : c.summary,
                 thumbnailUrl: ogImage || c.thumbnailUrl,
-                tagIds: allTagIds,
-                parseStatus: "ready" as const,
               }
             : c,
         ),
-      };
-    });
+      }));
+      setNotice({ message: `已获取：${title ?? "网页信息"}，正在生成标签…` });
+    }
 
-    setNotice({ message: meta?.title ? `已解析：${meta.title}` : "解析完成。" });
+    // Step 3: Run full AI tagger (LLM with 5-dimension × 4 tags = 20 tags)
+    // runAiTagger tries LLM first, falls back to local keyword extraction
+    try {
+      const updatedLibrary = await new Promise<HoardlyLibraryState>((resolve) => {
+        setLibrary((prev) => {
+          void runAiTagger(prev, cardId).then(resolve);
+          return prev;
+        });
+      });
+      setLibrary(updatedLibrary);
+      setNotice({ message: `标签生成完成：${title ?? url}` });
+    } catch {
+      // Fallback to local keyword extraction
+      setLibrary((prev) => {
+        const card = prev.cards.find((c) => c.id === cardId);
+        if (!card) return prev;
+        const input = cardToTaggerInput(card);
+        const tagResult = generateLocalTags(input, prev.tags);
+        const mergedTags = [...prev.tags];
+        for (const t of tagResult.newTags) {
+          if (!mergedTags.some((et) => et.id === t.id)) mergedTags.push(t);
+        }
+        return {
+          ...prev,
+          tags: mergedTags,
+          cards: prev.cards.map((c) =>
+            c.id === cardId
+              ? { ...c, tagIds: Array.from(new Set([...c.tagIds, ...tagResult.tagIds])), parseStatus: "ready" as const }
+              : c,
+          ),
+        };
+      });
+      setNotice({ message: `本地标签已生成（配置 Groq API Key 可获得更精准标签）` });
+    }
   };
 
   const createProject = () => {
@@ -2439,9 +2451,28 @@ function SettingsView({
           AI 标签与摘要会按当前语言展示，缺失时回退英文。
         </p>
       </SettingsCard>
-      <SettingsCard icon={Sparkles} title="AI 模型">
+      <SettingsCard icon={Sparkles} title="AI 标签引擎（Groq）">
         <p className="text-sm text-muted-foreground">
-          平台默认 AI / BYOK / 测试连接将在接入后端后启用。当前先保留统一设置入口。
+          配置 Groq API Key 后，每张卡片将通过 LLM 生成 20 个精准标签（5 维度 × 4 标签），覆盖核心主题、命名实体、方法技术、用途场景、所属领域。
+        </p>
+        <div className="mt-4 flex items-center gap-2">
+          <Input
+            type="password"
+            placeholder="gsk_..."
+            className="flex-1 font-mono text-xs"
+            defaultValue={window.localStorage.getItem("hoardly:groq-api-key") ?? ""}
+            onChange={(e) => {
+              const val = e.target.value.trim();
+              if (val) {
+                window.localStorage.setItem("hoardly:groq-api-key", val);
+              } else {
+                window.localStorage.removeItem("hoardly:groq-api-key");
+              }
+            }}
+          />
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          免费获取：<a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer" className="text-primary underline">console.groq.com/keys</a>。未配置时使用本地关键词提取（精度较低）。
         </p>
       </SettingsCard>
       <SettingsCard icon={Cloud} title="存储偏好">

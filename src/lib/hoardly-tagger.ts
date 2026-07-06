@@ -110,14 +110,29 @@ export type TaggerResult = {
 
 // ─── LLM call ────────────────────────────────────────────────────────────────
 
+const GROQ_API_KEY = "gsk_placeholder";
+
+function getGroqApiKey(): string | null {
+  if (typeof window !== "undefined") {
+    return window.localStorage.getItem("hoardly:groq-api-key") || null;
+  }
+  return null;
+}
+
 async function callLlm(
   systemPrompt: string,
   userPrompt: string,
 ): Promise<TagGenerationResult | null> {
+  const apiKey = getGroqApiKey();
+  if (!apiKey) return null;
+
   try {
-    const response = await fetch("/api/ai/chat", {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      },
       body: JSON.stringify({
         model: "llama-3.3-70b-versatile",
         messages: [
@@ -138,11 +153,9 @@ async function callLlm(
     const raw = data.choices?.[0]?.message?.content?.trim();
     if (!raw) return null;
 
-    // Strip potential markdown code fences
     const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
     const parsed = JSON.parse(cleaned) as TagGenerationResult;
 
-    // Validate shape
     if (!parsed.topic || !Array.isArray(parsed.topic)) return null;
     return parsed;
   } catch {
