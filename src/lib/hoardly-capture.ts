@@ -295,6 +295,157 @@ export function importBookmarksToLibrary(
   };
 }
 
+export type ImportFileFormat = "html" | "csv" | "json" | "markdown";
+
+export interface ParsedImportEntry {
+  title: string;
+  url: string;
+}
+
+export function detectImportFormat(file: File): ImportFileFormat | null {
+  const ext = file.name.split(".").pop()?.toLowerCase();
+  if (ext === "html" || ext === "htm") return "html";
+  if (ext === "csv") return "csv";
+  if (ext === "json") return "json";
+  if (ext === "md" || ext === "markdown") return "markdown";
+  if (file.type === "text/html") return "html";
+  if (file.type === "text/csv") return "csv";
+  if (file.type === "application/json") return "json";
+  return null;
+}
+
+export async function parseImportFile(file: File): Promise<ParsedImportEntry[]> {
+  const format = detectImportFormat(file);
+  if (!format) throw new Error(`不支持的文件格式：${file.name}`);
+
+  const text = await file.text();
+
+  switch (format) {
+    case "html":
+      return parseHtmlBookmarks(text);
+    case "csv":
+      return parseCsvBookmarks(text);
+    case "json":
+      return parseJsonBookmarks(text);
+    case "markdown":
+      return parseMarkdownBookmarks(text);
+  }
+}
+
+function parseHtmlBookmarks(html: string): ParsedImportEntry[] {
+  const entries: ParsedImportEntry[] = [];
+  const regex = /<a\s[^>]*href="([^"]+)"[^>]*>([^<]*)<\/a>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(html)) !== null) {
+    const url = match[1].trim();
+    const title = match[2].trim() || url;
+    if (/^https?:\/\//i.test(url)) {
+      entries.push({ title, url });
+    }
+  }
+  return entries;
+}
+
+function parseCsvBookmarks(csv: string): ParsedImportEntry[] {
+  const entries: ParsedImportEntry[] = [];
+  const lines = csv.split(/\r?\n/).filter((l) => l.trim());
+  const firstLine = lines[0]?.toLowerCase() ?? "";
+  const hasHeader = firstLine.includes("url") || firstLine.includes("title") || firstLine.includes("link");
+  const startIdx = hasHeader ? 1 : 0;
+
+  for (let i = startIdx; i < lines.length; i++) {
+    const cols = lines[i].split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
+    const urlCol = cols.find((c) => /^https?:\/\//i.test(c));
+    if (urlCol) {
+      const title = cols.find((c) => c !== urlCol && c.length > 0) ?? getHostname(urlCol);
+      entries.push({ title, url: urlCol });
+    }
+  }
+  return entries;
+}
+
+function parseJsonBookmarks(json: string): ParsedImportEntry[] {
+  const entries: ParsedImportEntry[] = [];
+  const data = JSON.parse(json);
+  const items: unknown[] = Array.isArray(data) ? data : data.bookmarks ?? data.items ?? data.links ?? [];
+  for (const item of items) {
+    if (item && typeof item === "object") {
+      const obj = item as Record<string, unknown>;
+      const url = (obj.url ?? obj.link ?? obj.href ?? "") as string;
+      const title = (obj.title ?? obj.name ?? obj.description ?? "") as string;
+      if (/^https?:\/\//i.test(url)) {
+        entries.push({ title: title || getHostname(url), url });
+      }
+    }
+  }
+  return entries;
+}
+
+function parseMarkdownBookmarks(md: string): ParsedImportEntry[] {
+  const entries: ParsedImportEntry[] = [];
+  const linkRegex = /\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = linkRegex.exec(md)) !== null) {
+    entries.push({ title: match[1].trim() || match[2], url: match[2].trim() });
+  }
+  const bareUrlRegex = /(?:^|\s)(https?:\/\/\S+)/gm;
+  while ((match = bareUrlRegex.exec(md)) !== null) {
+    const url = match[1].trim();
+    if (!entries.some((e) => e.url === url)) {
+      entries.push({ title: getHostname(url), url });
+    }
+  }
+  return entries;
+}
+
+/**
+ * 覆盖式导入：用解析出的书签完全替换现有卡片库。
+ * 保留 projects、tags、maintenanceIssues 结构，仅替换 cards。
+ */
+export function replaceLibraryWithImport(
+  library: HoardlyLibraryState,
+  entries: ParsedImportEntry[],
+): BookmarkImportResult {
+  let created = 0;
+  let failed = 0;
+  const cards: HoardlyCard[] = [];
+  const importIssues: HoardlyMaintenanceIssue[] = [];
+
+  for (const entry of entries) {
+    try {
+      const card = createCardFromCapture({
+        source: "import",
+        title: entry.title,
+        url: entry.url,
+      });
+      cards.push(card);
+      created += 1;
+    } catch (error) {
+      failed += 1;
+      importIssues.push({
+        description: error instanceof Error ? error.message : "解析失败",
+        id: `issue-import-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        severity: "medium",
+        title: `导入失败：${entry.title || entry.url}`,
+        type: "import_failed",
+      });
+    }
+  }
+
+  return {
+    created,
+    duplicates: 0,
+    failed,
+    library: {
+      ...library,
+      cards,
+      maintenanceIssues: [...importIssues, ...library.maintenanceIssues],
+    },
+    restored: 0,
+    total: entries.length,
+  };
+}
+
 export function normalizeUrlForDedup(url: string) {
   try {
     const parsed = new URL(url.trim());

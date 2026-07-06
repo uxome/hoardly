@@ -10,6 +10,7 @@ import {
   Database,
   FolderPlus,
   FileText,
+  FileUp,
   FolderKanban,
   Globe2,
   Grid2X2,
@@ -51,9 +52,12 @@ import {
   defaultHoardlyLocale,
 } from "../../src/lib/hoardly-seed";
 import {
+  detectImportFormat,
   getHostname,
   importBookmarksToLibrary,
   loadHoardlyLibrary,
+  parseImportFile,
+  replaceLibraryWithImport,
   runAiTagger,
   saveHoardlyLibrary,
   slugify,
@@ -564,6 +568,60 @@ function HoardlyWebApp() {
     });
   };
 
+  const importFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (importFileInputRef.current) importFileInputRef.current.value = "";
+
+    const format = detectImportFormat(file);
+    if (!format) {
+      setImportStatus({ message: `不支持的文件格式：${file.name}。请上传 HTML、CSV、JSON 或 Markdown 文件。`, state: "error" });
+      setNotice({ message: `不支持的文件格式：${file.name}` });
+      return;
+    }
+
+    const currentCount = library.cards.filter((c) => !c.deletedAt).length;
+    const confirmed = window.confirm(
+      `⚠️ 导入将完全覆盖当前收藏库\n\n` +
+      `当前库中有 ${currentCount} 张卡片，导入后将被全部替换为文件中的书签。\n` +
+      `此操作不可撤销。\n\n` +
+      `确定要继续吗？`,
+    );
+    if (!confirmed) {
+      setImportStatus({ message: "已取消导入。", state: "done" });
+      return;
+    }
+
+    setImportStatus({ message: `正在解析 ${file.name}（${format.toUpperCase()} 格式）...`, state: "importing" });
+
+    try {
+      const entries = await parseImportFile(file);
+      if (entries.length === 0) {
+        setImportStatus({ message: "文件中没有找到可导入的书签链接。", state: "done" });
+        setNotice({ message: "文件中没有找到可导入的书签链接。" });
+        return;
+      }
+
+      const result = replaceLibraryWithImport(library, entries);
+      setLibrary(result.library);
+      setImportStatus({
+        message: `完成：从 ${file.name} 导入 ${result.created} 条书签${result.failed > 0 ? `，${result.failed} 条失败` : ""}。原有 ${currentCount} 条已替换。`,
+        state: result.failed > 0 ? "error" : "done",
+      });
+      setNotice({
+        message: `已导入 ${result.created} 条书签，原有 ${currentCount} 条已替换。`,
+      });
+      setActiveSection("all");
+      clearCardSelection();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "文件导入失败。";
+      setImportStatus({ message, state: "error" });
+      setNotice({ message });
+    }
+  };
+
   const importChromeBookmarks = async () => {
     const canReadChromeBookmarks = hasChromeExtensionRuntime();
     setImportStatus({
@@ -583,14 +641,27 @@ function HoardlyWebApp() {
         return;
       }
 
-      const result = importBookmarksToLibrary(library, bookmarks);
+      const currentCount = library.cards.filter((c) => !c.deletedAt).length;
+      const confirmed = window.confirm(
+        `⚠️ 导入将完全覆盖当前收藏库\n\n` +
+        `当前库中有 ${currentCount} 张卡片，导入后将被全部替换为 Chrome 书签。\n` +
+        `此操作不可撤销。\n\n` +
+        `确定要继续吗？`,
+      );
+      if (!confirmed) {
+        setImportStatus({ message: "已取消导入。", state: "done" });
+        return;
+      }
+
+      const entries = bookmarks.map((b) => ({ title: b.title, url: b.url }));
+      const result = replaceLibraryWithImport(library, entries);
       setLibrary(result.library);
       setImportStatus({
-        message: `完成：新增 ${result.created}，重复 ${result.duplicates}，恢复 ${result.restored}，失败 ${result.failed}。`,
+        message: `完成：导入 ${result.created} 条 Chrome 书签${result.failed > 0 ? `，${result.failed} 条失败` : ""}。原有 ${currentCount} 条已替换。`,
         state: result.failed > 0 ? "error" : "done",
       });
       setNotice({
-        message: `已导入 ${result.created} 条 Chrome 书签，${result.duplicates} 条已在库中。`,
+        message: `已导入 ${result.created} 条 Chrome 书签，原有 ${currentCount} 条已替换。`,
       });
       setActiveSection("all");
       clearCardSelection();
@@ -598,19 +669,6 @@ function HoardlyWebApp() {
       const message = error instanceof Error ? error.message : "Chrome 书签导入失败。";
       setImportStatus({ message, state: "error" });
       setNotice({ message });
-      setLibrary((current) => ({
-        ...current,
-        maintenanceIssues: [
-          {
-            description: message,
-            id: `issue-import-runtime-${Date.now()}`,
-            severity: "high",
-            title: "Chrome 书签导入失败",
-            type: "import_failed",
-          },
-          ...current.maintenanceIssues,
-        ],
-      }));
     }
   };
 
@@ -916,10 +974,12 @@ function HoardlyWebApp() {
 
           {activeSection === "settings" ? (
             <SettingsView
+              importFileInputRef={importFileInputRef}
               importStatus={importStatus}
               locale={locale}
               mcpEnabled={mcpEnabled}
               onImportChromeBookmarks={() => void importChromeBookmarks()}
+              onImportFile={handleImportFile}
               setLocale={setLocale}
               setMcpEnabled={setMcpEnabled}
             />
@@ -2186,45 +2246,71 @@ function TrashView({
 }
 
 function SettingsView({
+  importFileInputRef,
   importStatus,
   locale,
   mcpEnabled,
   onImportChromeBookmarks,
+  onImportFile,
   setLocale,
   setMcpEnabled,
 }: {
+  importFileInputRef: React.RefObject<HTMLInputElement | null>;
   importStatus: ImportStatus;
   locale: HoardlyLocale;
   mcpEnabled: boolean;
   onImportChromeBookmarks: () => void;
+  onImportFile: (e: React.ChangeEvent<HTMLInputElement>) => void;
   setLocale: (locale: HoardlyLocale) => void;
   setMcpEnabled: (enabled: boolean) => void;
 }) {
   return (
     <div className="grid gap-4 xl:grid-cols-2">
-      <SettingsCard icon={Archive} title="Chrome 书签导入">
+      <SettingsCard icon={FileUp} title="收藏导入">
         <p className="text-sm text-muted-foreground">
-          读取 Chrome bookmarks API 后生成 Hoardly cards；导入后独立管理，不写回 Chrome 文件夹树。
+          上传书签文件导入到 Hoardly。支持浏览器导出的 HTML 书签文件、CSV、JSON 或 Markdown 格式。
         </p>
+        <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+          <p className="text-xs font-medium text-amber-400">⚠️ 导入将完全覆盖当前收藏库中的所有卡片，此操作不可撤销。请在导入前确认备份。</p>
+        </div>
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button
             className="gap-1.5"
             disabled={importStatus.state === "importing"}
-            onClick={onImportChromeBookmarks}
+            onClick={() => importFileInputRef.current?.click()}
           >
             {importStatus.state === "importing" ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
-              <Archive className="size-4" />
+              <FileUp className="size-4" />
             )}
+            上传书签文件
+          </Button>
+          <input
+            ref={importFileInputRef}
+            type="file"
+            accept=".html,.htm,.csv,.json,.md,.markdown"
+            className="hidden"
+            onChange={onImportFile}
+          />
+          <Button
+            variant="outline"
+            className="gap-1.5"
+            disabled={importStatus.state === "importing"}
+            onClick={onImportChromeBookmarks}
+          >
+            <Archive className="size-4" />
             从 Chrome 导入
           </Button>
           <span className="rounded-md bg-secondary px-2 py-1 text-xs">
             {hasChromeExtensionRuntime() ? "扩展环境" : "H5 示例模式"}
           </span>
         </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          支持格式：HTML（浏览器导出）、CSV、JSON、Markdown
+        </p>
         <p
-          className={`mt-3 text-sm ${
+          className={`mt-2 text-sm ${
             importStatus.state === "error" ? "text-destructive" : "text-muted-foreground"
           }`}
         >
