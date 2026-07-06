@@ -200,156 +200,241 @@ function processLlmResult(
   return { newTags, tagIds };
 }
 
-// ─── Fallback: URL + title based heuristic tags ─────────────────────────────
+// ─── Content-aware tag extraction ────────────────────────────────────────────
 
-const DOMAIN_TAG_MAP: Record<string, string[]> = {
-  "github.com": ["open-source", "code-repository", "developer-tools"],
-  "gitlab.com": ["open-source", "code-repository", "developer-tools"],
-  "stackoverflow.com": ["programming-qa", "developer-community"],
-  "arxiv.org": ["research-paper", "academic", "machine-learning"],
-  "medium.com": ["blog-article", "long-form-reading"],
-  "substack.com": ["newsletter", "blog-article"],
-  "dev.to": ["developer-blog", "web-development"],
-  "hackernews.com": ["tech-news", "startup"],
-  "news.ycombinator.com": ["tech-news", "startup"],
-  "producthunt.com": ["product-launch", "startup", "saas"],
-  "dribbble.com": ["ui-design", "design-inspiration"],
-  "behance.net": ["design-portfolio", "design-inspiration"],
-  "figma.com": ["ui-design", "design-tool"],
-  "youtube.com": ["video-content"],
-  "youtu.be": ["video-content"],
-  "bilibili.com": ["video-content", "chinese-platform"],
-  "twitter.com": ["social-media", "microblog"],
-  "x.com": ["social-media", "microblog"],
-  "reddit.com": ["community-forum", "discussion"],
-  "instagram.com": ["social-media", "visual-content"],
-  "pinterest.com": ["visual-inspiration", "design-reference"],
-  "linkedin.com": ["professional-network", "career"],
-  "notion.so": ["productivity-tool", "knowledge-management"],
-  "vercel.com": ["deployment", "frontend-platform"],
-  "nextjs.org": ["react-framework", "web-development"],
-  "supabase.com": ["backend-service", "database"],
-  "cloudflare.com": ["infrastructure", "cdn"],
-  "aws.amazon.com": ["cloud-service", "infrastructure"],
-  "npmjs.com": ["package-registry", "javascript"],
-  "docs.google.com": ["document", "collaboration"],
-  "wikipedia.org": ["encyclopedia", "reference"],
-  "zhihu.com": ["knowledge-qa", "chinese-platform"],
-  "juejin.cn": ["developer-blog", "chinese-platform"],
-  "xiaohongshu.com": ["lifestyle", "chinese-platform"],
-  "mp.weixin.qq.com": ["wechat-article", "chinese-platform"],
-  "taobao.com": ["e-commerce", "chinese-platform"],
-  "jd.com": ["e-commerce", "chinese-platform"],
-  "amazon.com": ["e-commerce", "shopping"],
-  "apple.com": ["apple", "technology"],
-  "openai.com": ["artificial-intelligence", "llm"],
-  "anthropic.com": ["artificial-intelligence", "llm"],
-  "huggingface.co": ["machine-learning", "ai-models"],
-};
+const SITE_NAME_SUFFIXES = [
+  "powered by discuz!", "powered by", "官方网站", "官网", "首页",
+  "home", "blog", "博客", "论坛", "社区", "网站",
+];
 
-const TITLE_KEYWORD_MAP: Record<string, string[]> = {
-  "tutorial": ["tutorial", "learning"],
-  "guide": ["guide", "how-to"],
-  "how to": ["how-to", "tutorial"],
-  "review": ["review", "evaluation"],
-  "api": ["api", "developer-tools"],
-  "design": ["design"],
-  "react": ["react", "frontend"],
-  "vue": ["vue", "frontend"],
-  "angular": ["angular", "frontend"],
-  "python": ["python", "programming"],
-  "javascript": ["javascript", "programming"],
-  "typescript": ["typescript", "programming"],
-  "rust": ["rust", "programming"],
-  "docker": ["docker", "devops"],
-  "kubernetes": ["kubernetes", "devops"],
-  "machine learning": ["machine-learning", "ai"],
-  "deep learning": ["deep-learning", "ai"],
-  "ai": ["artificial-intelligence"],
-  "startup": ["startup", "entrepreneurship"],
-  "saas": ["saas", "business"],
-  "free": ["free-resource"],
-  "open source": ["open-source"],
-  "database": ["database"],
-  "css": ["css", "frontend"],
-  "animation": ["animation", "ui-interaction"],
-  "figma": ["figma", "ui-design"],
-  "sketch": ["sketch", "ui-design"],
-  "portfolio": ["portfolio", "inspiration"],
-};
+const STOPWORDS = new Set([
+  "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+  "have", "has", "had", "do", "does", "did", "will", "would", "could",
+  "should", "may", "might", "shall", "can", "need", "dare", "ought",
+  "and", "or", "but", "if", "then", "else", "when", "at", "from", "by",
+  "on", "off", "for", "in", "out", "over", "to", "into", "with", "of",
+  "this", "that", "these", "those", "it", "its", "my", "your", "our",
+  "his", "her", "their", "not", "no", "nor", "so", "too", "very",
+  "just", "about", "up", "down", "here", "there", "all", "each",
+  "every", "both", "few", "more", "most", "other", "some", "such",
+  "than", "also", "how", "what", "which", "who", "whom", "why", "where",
+  "new", "get", "use", "see", "try", "let", "set", "run", "way",
+  "best", "top", "like", "make", "take", "come", "give", "look",
+  "find", "know", "want", "tell", "work", "call", "keep", "help",
+  "start", "show", "hear", "play", "move", "live", "believe",
+  "bring", "happen", "write", "provide", "sit", "stand", "lose",
+  "pay", "meet", "include", "continue", "learn", "change", "lead",
+  "understand", "watch", "follow", "stop", "create", "speak", "read",
+  "allow", "add", "spend", "grow", "open", "walk", "win", "offer",
+  "think", "decide", "compare", "track", "swipe", "daily", "picks",
+  "confidence", "using", "used", "based", "built", "made",
+  "com", "org", "net", "www", "http", "https", "html", "php", "asp",
+  "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都",
+  "一", "一个", "上", "也", "很", "到", "说", "要", "去", "你",
+  "会", "着", "没有", "看", "好", "自己", "这", "他", "她", "它",
+  "们", "吗", "吧", "呢", "啊", "哦", "嗯", "呀", "啦",
+  "目前", "可以", "如何", "什么", "这个", "那个", "一些", "已经",
+  "因为", "所以", "但是", "而且", "或者", "如果", "虽然", "不过",
+  "其实", "应该", "已经", "可能", "需要", "通过", "进行", "使用",
+  "关于", "以及", "其他", "之后", "之前", "还是", "比较", "非常",
+  "为了", "只是", "就是", "然后", "现在", "最新", "分享",
+]);
+
+/**
+ * Split title into content segments, removing site name and boilerplate.
+ * "数字移民-尼日利亚开通/转区YouTube会员教程 - 兔哥博客" →
+ *   ["数字移民", "尼日利亚开通", "转区YouTube会员教程"]
+ */
+function extractTitleSegments(title: string): string[] {
+  const mainParts = title.split(/\s*[|\-–—·]\s*/);
+
+  // The last segment is often the site name — remove it if title has 2+ parts
+  if (mainParts.length >= 2) {
+    const last = mainParts[mainParts.length - 1].toLowerCase();
+    const isSiteName = SITE_NAME_SUFFIXES.some((s) => last.includes(s))
+      || /^[a-z0-9]+\.(com|org|net|io|co|dev)$/i.test(last.trim())
+      || last.length <= 6;
+    if (isSiteName) mainParts.pop();
+  }
+
+  const segments: string[] = [];
+  for (const part of mainParts) {
+    const subs = part.split(/[/／,，、:：]+/).map((s) => s.trim()).filter(Boolean);
+    segments.push(...subs);
+  }
+  return segments.filter((s) => s.length >= 2);
+}
+
+/**
+ * Extract keyword phrases from Chinese + English mixed text.
+ * Uses boundary detection: CJK runs, capitalized English words/phrases, quoted terms.
+ */
+function extractKeyPhrases(text: string): string[] {
+  if (!text) return [];
+  const phrases: string[] = [];
+
+  // Extract CJK word groups (2-8 chars)
+  const cjkRuns = text.match(/[\u4e00-\u9fff\u3400-\u4dbf]{2,8}/g);
+  if (cjkRuns) phrases.push(...cjkRuns);
+
+  // Extract English words (3+ chars, not stopwords)
+  const engWords = text.match(/[a-zA-Z]{3,}/g);
+  if (engWords) {
+    for (const w of engWords) {
+      if (!STOPWORDS.has(w.toLowerCase()) && w.length >= 3) phrases.push(w);
+    }
+  }
+
+  // Extract multi-word English phrases (Title Case sequences)
+  const engPhrases = text.match(/[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+/g);
+  if (engPhrases) phrases.push(...engPhrases);
+
+  // Extract uppercase abbreviations (API, DeFi, CEX, etc.)
+  const abbrevs = text.match(/\b[A-Z][A-Za-z]*[A-Z]+[a-z]*\b/g);
+  if (abbrevs) phrases.push(...abbrevs.filter((t) => t.length >= 2 && t.length <= 10));
+
+  // Extract quoted/bracketed terms
+  const quoted = text.match(/[「」【】《》""'']+([^「」【】《》""'']+)[「」【】《》""'']+/g);
+  if (quoted) phrases.push(...quoted.map((q) => q.replace(/[「」【】《》""'']/g, "").trim()));
+
+  return phrases.filter((p) => p.length >= 2 && p.length <= 30);
+}
+
+/**
+ * From a description, extract the most descriptive noun phrases.
+ */
+function extractDescriptionTags(desc: string): string[] {
+  if (!desc) return [];
+  const phrases: string[] = [];
+
+  // Split on sentence boundaries
+  const sentences = desc.split(/[。！？.!?\n]+/).filter(Boolean);
+  for (const sentence of sentences.slice(0, 3)) {
+    phrases.push(...extractKeyPhrases(sentence));
+  }
+
+  return phrases;
+}
+
+function slugifyTag(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^\w\u4e00-\u9fff\u3400-\u4dbf-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function isValidTag(label: string): boolean {
+  if (label.length < 2 || label.length > 30) return false;
+  if (STOPWORDS.has(label.toLowerCase())) return false;
+  if (/^\d+$/.test(label)) return false;
+  if (/^[a-z]{1,3}$/i.test(label)) return false;
+  return true;
+}
 
 export function generateLocalTags(
   input: TaggerInput,
   existingTags: HoardlyTag[],
 ): TaggerResult {
-  const slugs = new Set<string>();
+  const tagLabels: string[] = [];
+  const seen = new Set<string>();
 
+  const addTag = (label: string) => {
+    const clean = label.trim();
+    if (!isValidTag(clean)) return;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    tagLabels.push(clean);
+  };
+
+  // 1. Extract from title (most important source)
+  if (input.title) {
+    const segments = extractTitleSegments(input.title);
+    for (const seg of segments) {
+      // Add the whole segment as a tag if it's short enough
+      if (seg.length >= 2 && seg.length <= 20) addTag(seg);
+      // Also extract sub-phrases
+      for (const phrase of extractKeyPhrases(seg)) {
+        addTag(phrase);
+      }
+    }
+  }
+
+  // 2. Extract from description/summary
+  if (input.summary) {
+    const descTags = extractDescriptionTags(input.summary);
+    for (const tag of descTags) {
+      addTag(tag);
+    }
+  }
+  if (input.bodyText) {
+    const bodyTags = extractDescriptionTags(input.bodyText.slice(0, 500));
+    for (const tag of bodyTags) {
+      addTag(tag);
+    }
+  }
+
+  // 3. Platform-specific domain tag (only for well-known sites)
   if (input.url) {
     try {
-      const parsed = new URL(input.url);
-      const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-
-      const domainName = host.replace(/\.(com|org|net|io|co|dev|app|ai|me|cc|tv)$/i, "");
-      slugs.add(domainName);
-
-      for (const [domain, tags] of Object.entries(DOMAIN_TAG_MAP)) {
-        if (host.includes(domain)) {
-          tags.forEach((t) => slugs.add(t));
-        }
-      }
-
-      const pathParts = parsed.pathname.split("/").filter((p) => p && p.length > 2 && p.length < 30 && !/^[0-9a-f-]+$/.test(p));
-      for (const part of pathParts.slice(0, 3)) {
-        const clean = part.replace(/[_\.]/g, "-").toLowerCase();
-        if (clean.length > 2) slugs.add(clean);
+      const host = new URL(input.url).hostname.replace(/^www\./, "").toLowerCase();
+      const KNOWN_PLATFORMS: Record<string, string> = {
+        "github.com": "GitHub", "youtube.com": "YouTube", "youtu.be": "YouTube",
+        "twitter.com": "Twitter", "x.com": "X/Twitter", "reddit.com": "Reddit",
+        "instagram.com": "Instagram", "facebook.com": "Facebook",
+        "linkedin.com": "LinkedIn", "medium.com": "Medium",
+        "zhihu.com": "知乎", "bilibili.com": "B站",
+        "xiaohongshu.com": "小红书", "juejin.cn": "掘金",
+        "mp.weixin.qq.com": "微信公众号", "douyin.com": "抖音",
+        "pinterest.com": "Pinterest", "figma.com": "Figma",
+        "notion.so": "Notion", "substack.com": "Substack",
+        "producthunt.com": "Product Hunt", "dribbble.com": "Dribbble",
+        "stackoverflow.com": "Stack Overflow",
+        "arxiv.org": "arXiv", "huggingface.co": "Hugging Face",
+      };
+      for (const [domain, label] of Object.entries(KNOWN_PLATFORMS)) {
+        if (host.includes(domain)) { addTag(label); break; }
       }
     } catch { /* ignore */ }
   }
 
-  if (input.title) {
-    const titleLower = input.title.toLowerCase();
-    for (const [keyword, tags] of Object.entries(TITLE_KEYWORD_MAP)) {
-      if (titleLower.includes(keyword)) {
-        tags.forEach((t) => slugs.add(t));
-      }
-    }
-  }
+  // 4. Author/subreddit if available
+  if (input.authorHandle) addTag(input.authorHandle.replace(/^@/, ""));
+  if (input.subreddit) addTag(input.subreddit);
 
-  if (input.subreddit) {
-    slugs.add(input.subreddit.replace(/^r\//, "").toLowerCase());
-  }
-
-  if (input.platform) {
-    slugs.add(input.platform.replace(/\.(com|org|net)$/i, ""));
-  }
-
-  slugs.delete("");
-
+  // Convert to tag objects
   const tagIds: string[] = [];
   const newTags: HoardlyTag[] = [];
 
-  for (const slug of slugs) {
-    const existing = existingTags.find((t) => t.slug === slug || t.id === `tag-${slug}` || t.id === `tag-domain-${slug}`);
+  for (const label of tagLabels.slice(0, 20)) {
+    const slug = slugifyTag(label);
+    if (!slug) continue;
+
+    const existing = existingTags.find((t) =>
+      t.slug === slug || t.labels?.["zh-CN"] === label || t.labels?.en === label,
+    );
+
     if (existing) {
-      tagIds.push(existing.id);
+      if (!tagIds.includes(existing.id)) tagIds.push(existing.id);
     } else {
-      const tag: HoardlyTag = {
-        id: `tag-${slug}`,
+      const id = `tag-${slug}`;
+      if (tagIds.includes(id)) continue;
+      newTags.push({
+        id,
         slug,
-        labels: {
-          en: slug.replace(/-/g, " "),
-          "zh-CN": slug.replace(/-/g, " "),
-        },
+        labels: { en: label, "zh-CN": label },
         origin: "ai" as const,
         dimension: "topic" as const,
         usageCount: 0,
-      };
-      newTags.push(tag);
-      tagIds.push(tag.id);
+      });
+      tagIds.push(id);
     }
   }
 
-  return { newTags, tagIds: tagIds.slice(0, 20) };
+  return { newTags, tagIds };
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
