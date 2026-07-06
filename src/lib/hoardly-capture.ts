@@ -127,7 +127,7 @@ export function createCardFromCapture(input: HoardlyCaptureInput): HoardlyCard {
       "zh-CN": title,
     },
     summary: createInitialSummary({ isUrl, text, url }),
-    tagIds: inferInitialTagIds(type, input.source),
+    tagIds: inferInitialTagIds(type, input.source, url),
     sourcePlatform: inferSourcePlatform(url, input.source),
     authorHandle: socialMeta.authorHandle,
     subreddit: socialMeta.subreddit,
@@ -402,19 +402,28 @@ function inferSourcePlatform(url: string | undefined, source: HoardlyCaptureSour
   return getHostname(url);
 }
 
-function inferInitialTagIds(type: HoardlyCardType, source: HoardlyCaptureSource) {
+function inferInitialTagIds(type: HoardlyCardType, source: HoardlyCaptureSource, url?: string) {
   if (type === "note") return ["tag-project-hoardly"];
+
+  const tags: string[] = [];
+
+  if (url) {
+    const host = getHostname(url).toLowerCase().replace(/^www\./, "");
+    const domainTag = `tag-domain-${slugify(host)}`;
+    tags.push(domainTag);
+  }
+
   if (type === "youtube" || type === "bilibili" || type === "video") {
-    return ["tag-video-summary"];
+    tags.push("tag-video-summary");
+  } else if (type === "xhs" || type === "douyin" || type === "wechat") {
+    tags.push("tag-chinese-platforms", "tag-product-research");
+  } else if (type === "reddit" || type === "tweet" || type === "instagram" || type === "facebook") {
+    tags.push("tag-product-research");
+  } else {
+    tags.push("tag-product-research");
   }
-  if (type === "xhs" || type === "douyin" || type === "wechat") {
-    return ["tag-chinese-platforms", "tag-product-research"];
-  }
-  if (type === "reddit" || type === "tweet" || type === "instagram" || type === "facebook") {
-    return ["tag-product-research"];
-  }
-  if (source === "import") return ["tag-product-research"];
-  return ["tag-product-research"];
+
+  return tags;
 }
 
 function createInitialSummary({

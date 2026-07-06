@@ -301,8 +301,15 @@ function HoardlyWebApp() {
   }, [activeSection, selectedCardIds.length, visibleCardIds]);
 
   const createCard = () => {
-    const value = newCardValue.trim();
+    let value = newCardValue.trim();
     if (!value) return;
+
+    const looksLikeUrl = /^https?:\/\//i.test(value)
+      || /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z]{2,})+(\/.*)?\s*$/i.test(value);
+
+    if (looksLikeUrl && !/^https?:\/\//i.test(value)) {
+      value = `https://${value}`;
+    }
 
     const isUrl = /^https?:\/\//i.test(value);
     const result = upsertCapturedCard(library, {
