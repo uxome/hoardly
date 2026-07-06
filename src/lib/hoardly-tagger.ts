@@ -79,13 +79,17 @@ newLabels: only for slugs NOT in the library. Each entry MUST have "en" + "${loc
 
 function buildUserPrompt(input: TaggerInput): string {
   const parts: string[] = [];
-  parts.push(`标题: ${input.title}`);
+  if (input.title) parts.push(`标题: ${input.title}`);
   if (input.url) parts.push(`URL: ${input.url}`);
   if (input.platform) parts.push(`平台: ${input.platform}`);
   if (input.authorHandle) parts.push(`作者: ${input.authorHandle}`);
   if (input.subreddit) parts.push(`子版块: ${input.subreddit}`);
   if (input.summary) parts.push(`摘要: ${input.summary}`);
   if (input.bodyText) parts.push(`正文片段:\n${input.bodyText.slice(0, 6000)}`);
+  if (parts.length === 0 || (parts.length === 1 && input.url)) {
+    parts.push("请根据 URL 域名和路径推断网站内容方向，生成最可能相关的标签。");
+  }
+  console.log("[Hoardly Tagger] User prompt:", parts.join("\n").slice(0, 300));
   return parts.join("\n");
 }
 
@@ -141,20 +145,31 @@ async function callLlm(
       }),
     });
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      console.warn(`[Hoardly Tagger] Groq API error: ${response.status} ${response.statusText}`);
+      return null;
+    }
 
     const data = (await response.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
     };
     const raw = data.choices?.[0]?.message?.content?.trim();
-    if (!raw) return null;
+    if (!raw) {
+      console.warn("[Hoardly Tagger] Groq returned empty content");
+      return null;
+    }
 
     const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+    console.log("[Hoardly Tagger] LLM raw response:", cleaned.slice(0, 500));
     const parsed = JSON.parse(cleaned) as TagGenerationResult;
 
-    if (!parsed.topic || !Array.isArray(parsed.topic)) return null;
+    if (!parsed.topic || !Array.isArray(parsed.topic)) {
+      console.warn("[Hoardly Tagger] LLM response missing 'topic' array");
+      return null;
+    }
     return parsed;
-  } catch {
+  } catch (err) {
+    console.error("[Hoardly Tagger] callLlm failed:", err);
     return null;
   }
 }
@@ -468,10 +483,27 @@ export async function generateTags(
   const result = await callLlm(systemPrompt, userPrompt);
   if (result) {
     const processed = processLlmResult(result, existingTags, allCards, locale);
-    if (processed.tagIds.length >= 15) return processed;
+    if (processed.tagIds.length >= 5) {
+      console.log(`[Hoardly Tagger] LLM produced ${processed.tagIds.length} tags`);
+      if (processed.tagIds.length < 15) {
+        const local = generateLocalTags(input, existingTags, locale);
+        const mergedIds = [...processed.tagIds];
+        const mergedNewTags = [...processed.newTags];
+        for (const lt of local.newTags) {
+          if (!mergedNewTags.some((t) => t.id === lt.id)) mergedNewTags.push(lt);
+        }
+        for (const id of local.tagIds) {
+          if (!mergedIds.includes(id)) mergedIds.push(id);
+        }
+        return { newTags: mergedNewTags, tagIds: mergedIds.slice(0, 20) };
+      }
+      return processed;
+    }
+    console.warn(`[Hoardly Tagger] LLM only produced ${processed.tagIds.length} tags, falling back`);
+  } else {
+    console.warn("[Hoardly Tagger] LLM returned null, falling back to local heuristics");
   }
 
-  // Fallback
   return generateLocalTags(input, existingTags, locale);
 }
 
