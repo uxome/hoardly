@@ -1126,11 +1126,11 @@ function HoardlyWebApp() {
         <CardDrawer
           card={drawerCard}
           locale={locale}
-          onAiRetag={(cardId) => {
+          onAiRetag={async (cardId) => {
             const card = library.cards.find((c) => c.id === cardId);
             if (!card?.url) return;
             setNotice({ message: "正在重新抓取网页信息并打标…" });
-            void fetchAndEnrichCard(cardId, card.url);
+            await fetchAndEnrichCard(cardId, card.url);
           }}
           onClose={() => setDrawerCardId(null)}
           onCreateTag={(slug, displayName, cardId) => {
@@ -2553,7 +2553,7 @@ function CardDrawer({
 }: {
   card: HoardlyCard;
   locale: HoardlyLocale;
-  onAiRetag?: (cardId: string) => void;
+  onAiRetag?: (cardId: string) => Promise<void>;
   onClose: () => void;
   onCreateTag?: (slug: string, displayName: string, cardId: string) => void;
   onPermanentlyDelete: (cardId: string) => void;
@@ -2567,6 +2567,7 @@ function CardDrawer({
 }) {
   const [tagToAdd, setTagToAdd] = useState("");
   const [noteMode, setNoteMode] = useState<"edit" | "preview">("edit");
+  const [retagging, setRetagging] = useState(false);
   const noteRef = useRef<HTMLTextAreaElement | null>(null);
 
   const cardTags = card.tagIds
@@ -2844,10 +2845,19 @@ function CardDrawer({
           <DrawerSection title={`标签 ${cardTags.length}`} action={
             <button
               type="button"
-              className="text-xs text-primary hover:underline"
-              onClick={() => onAiRetag?.(card.id)}
+              className="text-xs text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={retagging}
+              onClick={async () => {
+                if (retagging || !onAiRetag) return;
+                setRetagging(true);
+                try {
+                  await onAiRetag(card.id);
+                } finally {
+                  setRetagging(false);
+                }
+              }}
             >
-              AI 重新打标
+              {retagging ? "正在打标…" : "AI 重新打标"}
             </button>
           }>
             {(() => {
