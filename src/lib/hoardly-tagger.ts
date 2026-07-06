@@ -15,56 +15,54 @@ const ALL_DIMENSIONS: HoardlyTagDimension[] = ["topic", "entity", "method", "use
 
 // ─── Prompt ──────────────────────────────────────────────────────────────────
 
-function buildSystemPrompt(existingTags: HoardlyTag[]): string {
+const LOCALE_NAMES: Record<string, string> = {
+  "en": "English", "zh-CN": "简体中文", "zh-TW": "繁體中文",
+  "ja": "日本語", "es": "Español", "fr": "Français",
+  "de": "Deutsch", "ko": "한국어", "pt": "Português", "ar": "العربية",
+};
+
+function buildSystemPrompt(existingTags: HoardlyTag[], locale: string): string {
   const tagLibraryLines = existingTags
     .slice(0, 1000)
     .map((t) => `  ${t.slug}`)
     .join("\n");
 
-  return `你是 Hoardly 的精准标签引擎。你必须为用户收藏的每一条内容生成恰好 20 个高区分度标签。
+  const langName = LOCALE_NAMES[locale] || locale;
+  const isZh = locale.startsWith("zh");
+  const isEn = locale === "en";
 
-## 硬性要求
-- 总共必须恰好 20 个标签，分布在 5 个维度中
-- 每个标签必须能把这条内容从 1000 张卡片中区分出来
-- 如果一个标签在任何网页上都适用，它就是垃圾标签——绝对不要生成
-- 标签 slug 必须是英文小写 slug 风格（如 react-server-components），不能是中文
-- 优先复用"已有标签库"中的标签（slug 完全一致即复用），标签池有上千个标签可供选择
+  return `You are Hoardly's precision tag engine. Generate exactly 20 high-specificity tags for each piece of content.
 
-## 5 个维度（每个维度恰好 4 个标签，共 20 个）
+## Critical language rule
+- The user's display language is: **${langName}** (${locale})
+- ALL tag display labels (in newLabels) MUST be in **${langName}**
+- Exception: proper nouns (product names, company names, person names, place names) keep their original form (e.g. "YouTube", "Supabase", "OpenAI", "React")
+- ${isZh ? 'For Chinese: labels like "混合搜索", "向量索引", "前端工程" — NOT English words like "hybrid search"' : ''}
+- ${isEn ? 'For English: labels like "hybrid search", "vector indexing" — NOT Chinese characters' : ''}
+- slug remains English lowercase (e.g. "hybrid-search"), but the DISPLAY label in newLabels must be in ${langName}
 
-### topic (核心主题, 恰好 4 个)
-这篇内容具体在讲什么技术概念或具体话题。越细越好。
-好: hybrid-search, react-server-components, prompt-engineering, kv-cache-eviction
-坏: 技术, AI, 编程, development
+## Hard requirements
+- Exactly 20 tags across 5 dimensions
+- Each tag must distinguish this content from 1000 other cards
+- If a tag applies to any webpage, it's garbage — never generate it
+- slug must be English lowercase slug-style (e.g. react-server-components)
+- Prioritize reusing tags from the existing tag library (exact slug match)
 
-### entity (命名实体, 恰好 4 个)
-提到的关键工具、产品、框架、人物、组织、项目名。如果不足 4 个显式提及，扩展到上下文相关的实体。
-好: Supabase, pgvector, Andrej-Karpathy, OpenAI
-坏: 公司, 工具, 框架, database
+## 5 dimensions (exactly 4 tags each, 20 total)
 
-### method (方法/技术手段, 恰好 4 个)
-讨论了什么方法论、算法、架构模式或实现技术。
-好: RAG-pipeline, vector-indexing, few-shot-prompting, HNSW-index
-坏: 方法, 实现, 算法, approach
-
-### useCase (用途场景, 恰好 4 个)
-用户将来会在什么场景下回来找这个内容。想象搜索意图。
-好: architecture-reference, code-snippet, benchmark-data, api-documentation
-坏: 参考, 学习, 有用, reading
-
-### domain (所属领域, 恰好 4 个)
-属于什么垂直专业领域和子领域。
-好: NLP, frontend-engineering, distributed-systems, information-retrieval
-坏: 技术, IT, 互联网, software
+### topic (4 tags) — What specific concepts/topics does this content discuss?
+### entity (4 tags) — Key tools, products, frameworks, people, organizations mentioned
+### method (4 tags) — What methodologies, algorithms, patterns, or techniques are discussed?
+### useCase (4 tags) — In what scenarios would a user search for this content?
+### domain (4 tags) — What vertical/professional fields does this belong to?
 
 ${TAG_BLACKLIST_PROMPT_SECTION}
 
-## 用户已有标签库（优先复用，共 ${existingTags.length} 个）
-${tagLibraryLines || "(空)"}
+## Existing tag library (reuse when possible, ${existingTags.length} tags)
+${tagLibraryLines || "(empty)"}
 
-## 输出格式
-必须只输出一个 JSON 对象，不要加任何解释、markdown 或代码块标记。
-每个维度恰好 4 个 slug，共 20 个。
+## Output format
+Output ONLY a JSON object. No explanation, no markdown, no code fences.
 {
   "topic": ["slug1", "slug2", "slug3", "slug4"],
   "entity": ["slug1", "slug2", "slug3", "slug4"],
@@ -72,11 +70,11 @@ ${tagLibraryLines || "(空)"}
   "useCase": ["slug1", "slug2", "slug3", "slug4"],
   "domain": ["slug1", "slug2", "slug3", "slug4"],
   "newLabels": {
-    "slug-not-in-library": { "en": "English Label", "zh-CN": "中文标签" }
+    "slug-not-in-library": { "en": "English Label", "${locale}": "${langName} label" }
   }
 }
 
-newLabels 只包含标签库中不存在的新 slug。已有的不需要重复。`;
+newLabels: only for slugs NOT in the library. Each entry MUST have "en" + "${locale}" keys. The "${locale}" value MUST be in ${langName}.`;
 }
 
 function buildUserPrompt(input: TaggerInput): string {
@@ -109,8 +107,6 @@ export type TaggerResult = {
 };
 
 // ─── LLM call ────────────────────────────────────────────────────────────────
-
-const GROQ_API_KEY = "gsk_placeholder";
 
 function getGroqApiKey(): string | null {
   if (typeof window !== "undefined") {
@@ -169,6 +165,7 @@ function processLlmResult(
   result: TagGenerationResult,
   existingTags: HoardlyTag[],
   allCards: HoardlyCard[],
+  locale = "zh-CN",
 ): TaggerResult {
   const tagIds: string[] = [];
   const newTags: HoardlyTag[] = [];
@@ -193,12 +190,14 @@ function processLlmResult(
         tagIds.push(existing.id);
       } else {
         const labels = result.newLabels?.[slug];
+        const localeLabel = labels?.[locale as keyof typeof labels] as string | undefined;
+        const enLabel = labels?.en ?? slug.replace(/-/g, " ");
         const newTag: HoardlyTag = {
           id: `tag-${slug}`,
           slug,
           labels: {
-            en: labels?.en ?? slug.replace(/-/g, " "),
-            "zh-CN": labels?.["zh-CN"] ?? slug.replace(/-/g, " "),
+            en: enLabel,
+            [locale]: localeLabel || enLabel,
           },
           origin: "ai",
           dimension: dim,
@@ -350,6 +349,7 @@ function isValidTag(label: string): boolean {
 export function generateLocalTags(
   input: TaggerInput,
   existingTags: HoardlyTag[],
+  locale = "zh-CN",
 ): TaggerResult {
   const tagLabels: string[] = [];
   const seen = new Set<string>();
@@ -427,7 +427,7 @@ export function generateLocalTags(
     if (!slug) continue;
 
     const existing = existingTags.find((t) =>
-      t.slug === slug || t.labels?.["zh-CN"] === label || t.labels?.en === label,
+      t.slug === slug || t.labels?.[locale] === label || t.labels?.en === label,
     );
 
     if (existing) {
@@ -438,7 +438,7 @@ export function generateLocalTags(
       newTags.push({
         id,
         slug,
-        labels: { en: label, "zh-CN": label },
+        labels: { en: label, [locale]: label },
         origin: "ai" as const,
         dimension: "topic" as const,
         usageCount: 0,
@@ -460,18 +460,19 @@ export async function generateTags(
   input: TaggerInput,
   existingTags: HoardlyTag[],
   allCards: HoardlyCard[],
+  locale = "zh-CN",
 ): Promise<TaggerResult> {
-  const systemPrompt = buildSystemPrompt(existingTags);
+  const systemPrompt = buildSystemPrompt(existingTags, locale);
   const userPrompt = buildUserPrompt(input);
 
   const result = await callLlm(systemPrompt, userPrompt);
   if (result) {
-    const processed = processLlmResult(result, existingTags, allCards);
+    const processed = processLlmResult(result, existingTags, allCards, locale);
     if (processed.tagIds.length >= 15) return processed;
   }
 
   // Fallback
-  return generateLocalTags(input, existingTags);
+  return generateLocalTags(input, existingTags, locale);
 }
 
 /**

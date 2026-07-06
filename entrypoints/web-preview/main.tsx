@@ -425,7 +425,7 @@ function HoardlyWebApp() {
     try {
       const updatedLibrary = await new Promise<HoardlyLibraryState>((resolve) => {
         setLibrary((prev) => {
-          void runAiTagger(prev, cardId).then(resolve);
+          void runAiTagger(prev, cardId, locale).then(resolve);
           return prev;
         });
       });
@@ -437,7 +437,7 @@ function HoardlyWebApp() {
         const card = prev.cards.find((c) => c.id === cardId);
         if (!card) return prev;
         const input = cardToTaggerInput(card);
-        const tagResult = generateLocalTags(input, prev.tags);
+        const tagResult = generateLocalTags(input, prev.tags, locale);
         const mergedTags = [...prev.tags];
         for (const t of tagResult.newTags) {
           if (!mergedTags.some((et) => et.id === t.id)) mergedTags.push(t);
@@ -1110,7 +1110,7 @@ function HoardlyWebApp() {
           card={drawerCard}
           locale={locale}
           onAiRetag={(cardId) => {
-            void runAiTagger(library, cardId).then((updated) => {
+            void runAiTagger(library, cardId, locale).then((updated) => {
               setLibrary(updated);
               setNotice({ message: "AI 重新打标完成" });
             }).catch(() => {

@@ -607,12 +607,13 @@ function createInitialSummary({
 export async function runAiTagger(
   library: HoardlyLibraryState,
   cardId: string,
+  locale = "zh-CN",
 ): Promise<HoardlyLibraryState> {
   const card = library.cards.find((c) => c.id === cardId);
   if (!card) return library;
 
   const input = cardToTaggerInput(card);
-  const result = await generateTags(input, library.tags, library.cards);
+  const result = await generateTags(input, library.tags, library.cards, locale);
 
   const mergedTags = [...library.tags];
   for (const newTag of result.newTags) {
