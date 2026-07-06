@@ -214,6 +214,35 @@ function HoardlyWebApp() {
     saveHoardlyLibrary(library);
   }, [library]);
 
+  // Startup: re-enrich cards that are stuck in pending, have numeric titles, or empty tags
+  const startupEnrichRanRef = useRef(false);
+  useEffect(() => {
+    if (startupEnrichRanRef.current) return;
+    startupEnrichRanRef.current = true;
+
+    const brokenCards = library.cards.filter((card) => {
+      if (card.deletedAt || !card.url) return false;
+      const isPending = card.parseStatus === "pending";
+      const isNumericTitle = /^\d+$/.test(card.titleOriginal);
+      const hasNoTags = card.tagIds.length === 0;
+      const hasOnlyDomainTag = card.tagIds.length <= 2 && card.tagIds.every((id) => id.startsWith("tag-domain-") || id === "tag-product-research");
+      return isPending || isNumericTitle || hasNoTags || hasOnlyDomainTag;
+    });
+
+    if (brokenCards.length === 0) return;
+
+    const enrichSequentially = async () => {
+      for (const card of brokenCards) {
+        if (card.url) {
+          await fetchAndEnrichCard(card.id, card.url);
+          await new Promise((r) => setTimeout(r, 300));
+        }
+      }
+    };
+    void enrichSequentially();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // MCP sync: push library snapshot to local dev server whenever it changes
   useEffect(() => {
     if (!mcpEnabled) return;
