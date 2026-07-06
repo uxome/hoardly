@@ -200,41 +200,156 @@ function processLlmResult(
   return { newTags, tagIds };
 }
 
-// ─── Fallback: URL-based heuristic tags ──────────────────────────────────────
+// ─── Fallback: URL + title based heuristic tags ─────────────────────────────
 
-function heuristicTagIds(input: TaggerInput, existingTags: HoardlyTag[]): string[] {
-  const ids: string[] = [];
+const DOMAIN_TAG_MAP: Record<string, string[]> = {
+  "github.com": ["open-source", "code-repository", "developer-tools"],
+  "gitlab.com": ["open-source", "code-repository", "developer-tools"],
+  "stackoverflow.com": ["programming-qa", "developer-community"],
+  "arxiv.org": ["research-paper", "academic", "machine-learning"],
+  "medium.com": ["blog-article", "long-form-reading"],
+  "substack.com": ["newsletter", "blog-article"],
+  "dev.to": ["developer-blog", "web-development"],
+  "hackernews.com": ["tech-news", "startup"],
+  "news.ycombinator.com": ["tech-news", "startup"],
+  "producthunt.com": ["product-launch", "startup", "saas"],
+  "dribbble.com": ["ui-design", "design-inspiration"],
+  "behance.net": ["design-portfolio", "design-inspiration"],
+  "figma.com": ["ui-design", "design-tool"],
+  "youtube.com": ["video-content"],
+  "youtu.be": ["video-content"],
+  "bilibili.com": ["video-content", "chinese-platform"],
+  "twitter.com": ["social-media", "microblog"],
+  "x.com": ["social-media", "microblog"],
+  "reddit.com": ["community-forum", "discussion"],
+  "instagram.com": ["social-media", "visual-content"],
+  "pinterest.com": ["visual-inspiration", "design-reference"],
+  "linkedin.com": ["professional-network", "career"],
+  "notion.so": ["productivity-tool", "knowledge-management"],
+  "vercel.com": ["deployment", "frontend-platform"],
+  "nextjs.org": ["react-framework", "web-development"],
+  "supabase.com": ["backend-service", "database"],
+  "cloudflare.com": ["infrastructure", "cdn"],
+  "aws.amazon.com": ["cloud-service", "infrastructure"],
+  "npmjs.com": ["package-registry", "javascript"],
+  "docs.google.com": ["document", "collaboration"],
+  "wikipedia.org": ["encyclopedia", "reference"],
+  "zhihu.com": ["knowledge-qa", "chinese-platform"],
+  "juejin.cn": ["developer-blog", "chinese-platform"],
+  "xiaohongshu.com": ["lifestyle", "chinese-platform"],
+  "mp.weixin.qq.com": ["wechat-article", "chinese-platform"],
+  "taobao.com": ["e-commerce", "chinese-platform"],
+  "jd.com": ["e-commerce", "chinese-platform"],
+  "amazon.com": ["e-commerce", "shopping"],
+  "apple.com": ["apple", "technology"],
+  "openai.com": ["artificial-intelligence", "llm"],
+  "anthropic.com": ["artificial-intelligence", "llm"],
+  "huggingface.co": ["machine-learning", "ai-models"],
+};
 
-  const tryAdd = (slug: string) => {
-    const found = existingTags.find((t) => t.slug === slug);
-    if (found && !ids.includes(found.id)) ids.push(found.id);
-  };
+const TITLE_KEYWORD_MAP: Record<string, string[]> = {
+  "tutorial": ["tutorial", "learning"],
+  "guide": ["guide", "how-to"],
+  "how to": ["how-to", "tutorial"],
+  "review": ["review", "evaluation"],
+  "api": ["api", "developer-tools"],
+  "design": ["design"],
+  "react": ["react", "frontend"],
+  "vue": ["vue", "frontend"],
+  "angular": ["angular", "frontend"],
+  "python": ["python", "programming"],
+  "javascript": ["javascript", "programming"],
+  "typescript": ["typescript", "programming"],
+  "rust": ["rust", "programming"],
+  "docker": ["docker", "devops"],
+  "kubernetes": ["kubernetes", "devops"],
+  "machine learning": ["machine-learning", "ai"],
+  "deep learning": ["deep-learning", "ai"],
+  "ai": ["artificial-intelligence"],
+  "startup": ["startup", "entrepreneurship"],
+  "saas": ["saas", "business"],
+  "free": ["free-resource"],
+  "open source": ["open-source"],
+  "database": ["database"],
+  "css": ["css", "frontend"],
+  "animation": ["animation", "ui-interaction"],
+  "figma": ["figma", "ui-design"],
+  "sketch": ["sketch", "ui-design"],
+  "portfolio": ["portfolio", "inspiration"],
+};
+
+export function generateLocalTags(
+  input: TaggerInput,
+  existingTags: HoardlyTag[],
+): TaggerResult {
+  const slugs = new Set<string>();
 
   if (input.url) {
-    const host = (() => {
-      try { return new URL(input.url).hostname.replace(/^www\./, "").toLowerCase(); }
-      catch { return ""; }
-    })();
+    try {
+      const parsed = new URL(input.url);
+      const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
 
-    if (host.includes("github.com")) tryAdd("open-source");
-    if (host.includes("arxiv.org")) tryAdd("research-paper");
-    if (host.includes("supabase.com")) { tryAdd("Supabase"); tryAdd("database"); }
-    if (host.includes("vercel.com") || host.includes("nextjs.org")) tryAdd("Next.js");
+      const domainName = host.replace(/\.(com|org|net|io|co|dev|app|ai|me|cc|tv)$/i, "");
+      slugs.add(domainName);
+
+      for (const [domain, tags] of Object.entries(DOMAIN_TAG_MAP)) {
+        if (host.includes(domain)) {
+          tags.forEach((t) => slugs.add(t));
+        }
+      }
+
+      const pathParts = parsed.pathname.split("/").filter((p) => p && p.length > 2 && p.length < 30 && !/^[0-9a-f-]+$/.test(p));
+      for (const part of pathParts.slice(0, 3)) {
+        const clean = part.replace(/[_\.]/g, "-").toLowerCase();
+        if (clean.length > 2) slugs.add(clean);
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (input.title) {
+    const titleLower = input.title.toLowerCase();
+    for (const [keyword, tags] of Object.entries(TITLE_KEYWORD_MAP)) {
+      if (titleLower.includes(keyword)) {
+        tags.forEach((t) => slugs.add(t));
+      }
+    }
   }
 
   if (input.subreddit) {
-    const sub = input.subreddit.replace(/^r\//, "").toLowerCase();
-    const found = existingTags.find((t) => t.slug.toLowerCase() === sub);
-    if (found) ids.push(found.id);
+    slugs.add(input.subreddit.replace(/^r\//, "").toLowerCase());
   }
 
-  // Always include at least one general tag from existing library
-  if (ids.length === 0) {
-    const first = existingTags.find((t) => t.origin === "ai");
-    if (first) ids.push(first.id);
+  if (input.platform) {
+    slugs.add(input.platform.replace(/\.(com|org|net)$/i, ""));
   }
 
-  return ids.slice(0, 5);
+  slugs.delete("");
+
+  const tagIds: string[] = [];
+  const newTags: HoardlyTag[] = [];
+
+  for (const slug of slugs) {
+    const existing = existingTags.find((t) => t.slug === slug || t.id === `tag-${slug}` || t.id === `tag-domain-${slug}`);
+    if (existing) {
+      tagIds.push(existing.id);
+    } else {
+      const tag: HoardlyTag = {
+        id: `tag-${slug}`,
+        slug,
+        labels: {
+          en: slug.replace(/-/g, " "),
+          "zh-CN": slug.replace(/-/g, " "),
+        },
+        origin: "ai" as const,
+        dimension: "topic" as const,
+        usageCount: 0,
+      };
+      newTags.push(tag);
+      tagIds.push(tag.id);
+    }
+  }
+
+  return { newTags, tagIds: tagIds.slice(0, 20) };
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -258,7 +373,7 @@ export async function generateTags(
   }
 
   // Fallback
-  return { newTags: [], tagIds: heuristicTagIds(input, existingTags) };
+  return generateLocalTags(input, existingTags);
 }
 
 /**

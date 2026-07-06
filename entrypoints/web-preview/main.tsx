@@ -51,6 +51,7 @@ import { Textarea } from "../../src/components/ui/textarea";
 import {
   defaultHoardlyLocale,
 } from "../../src/lib/hoardly-seed";
+import { generateLocalTags, cardToTaggerInput } from "../../src/lib/hoardly-tagger";
 import {
   detectImportFormat,
   getHostname,
@@ -326,16 +327,85 @@ function HoardlyWebApp() {
     setLibrary(result.library);
     setDrawerCardId(result.card.id);
     setNewCardValue("");
-    setNotice({
-      message:
-        result.status === "duplicate"
-          ? "该链接已在库中，已打开已有卡片。"
-          : result.status === "restored"
-            ? "该链接已在回收站，已恢复已有卡片。"
-            : isUrl
-              ? "已创建 pending 卡片，解析稍后补全。"
+
+    if (result.status === "created" && isUrl) {
+      setNotice({ message: "正在解析网页信息…" });
+      void enrichNewCard(result.card.id, value, result.library);
+    } else {
+      setNotice({
+        message:
+          result.status === "duplicate"
+            ? "该链接已在库中，已打开已有卡片。"
+            : result.status === "restored"
+              ? "该链接已在回收站，已恢复已有卡片。"
               : "已创建笔记卡片。",
+      });
+    }
+  };
+
+  const enrichNewCard = async (cardId: string, url: string, currentLibrary: HoardlyLibraryState) => {
+    let title: string | undefined;
+    let description: string | undefined;
+    let ogImage: string | undefined;
+
+    try {
+      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+      const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
+      if (resp.ok) {
+        const html = await resp.text();
+        const getMetaContent = (nameOrProperty: string) => {
+          const re = new RegExp(`<meta[^>]+(?:name|property)=["']${nameOrProperty}["'][^>]+content=["']([^"']+)["']`, "i");
+          const alt = new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']${nameOrProperty}["']`, "i");
+          return re.exec(html)?.[1] || alt.exec(html)?.[1];
+        };
+        title = getMetaContent("og:title") || getMetaContent("twitter:title") || /<title[^>]*>([^<]+)<\/title>/i.exec(html)?.[1]?.trim();
+        description = getMetaContent("og:description") || getMetaContent("description") || getMetaContent("twitter:description");
+        ogImage = getMetaContent("og:image") || getMetaContent("twitter:image");
+        if (ogImage && !/^https?:\/\//i.test(ogImage)) {
+          try { ogImage = new URL(ogImage, url).href; } catch { ogImage = undefined; }
+        }
+      }
+    } catch { /* network error, continue with heuristic tags */ }
+
+    setLibrary((prev) => {
+      const card = prev.cards.find((c) => c.id === cardId);
+      if (!card) return prev;
+
+      const input = cardToTaggerInput({
+        ...card,
+        titleOriginal: title || card.titleOriginal,
+        summary: description ? { en: description, "zh-CN": description } : card.summary,
+      });
+      const tagResult = generateLocalTags(input, prev.tags);
+
+      const mergedTags = [...prev.tags];
+      for (const t of tagResult.newTags) {
+        if (!mergedTags.some((et) => et.id === t.id)) mergedTags.push(t);
+      }
+
+      const allTagIds = Array.from(new Set([...card.tagIds, ...tagResult.tagIds]));
+
+      return {
+        ...prev,
+        tags: mergedTags,
+        cards: prev.cards.map((c) =>
+          c.id === cardId
+            ? {
+                ...c,
+                titleOriginal: title || c.titleOriginal,
+                titleI18n: title ? { en: title, "zh-CN": title } : c.titleI18n,
+                summary: description
+                  ? { en: description, "zh-CN": description }
+                  : c.summary,
+                thumbnailUrl: ogImage || c.thumbnailUrl,
+                tagIds: allTagIds,
+                parseStatus: "ready" as const,
+              }
+            : c,
+        ),
+      };
     });
+    setNotice({ message: title ? `已解析：${title}` : "解析完成，已生成标签。" });
   };
 
   const createProject = () => {
