@@ -480,30 +480,53 @@ export async function generateTags(
   const systemPrompt = buildSystemPrompt(existingTags, locale);
   const userPrompt = buildUserPrompt(input);
 
-  const result = await callLlm(systemPrompt, userPrompt);
-  if (result) {
-    const processed = processLlmResult(result, existingTags, allCards, locale);
-    if (processed.tagIds.length >= 5) {
-      console.log(`[Hoardly Tagger] LLM produced ${processed.tagIds.length} tags`);
-      if (processed.tagIds.length < 15) {
-        const local = generateLocalTags(input, existingTags, locale);
-        const mergedIds = [...processed.tagIds];
-        const mergedNewTags = [...processed.newTags];
-        for (const lt of local.newTags) {
-          if (!mergedNewTags.some((t) => t.id === lt.id)) mergedNewTags.push(lt);
-        }
-        for (const id of local.tagIds) {
-          if (!mergedIds.includes(id)) mergedIds.push(id);
-        }
-        return { newTags: mergedNewTags, tagIds: mergedIds.slice(0, 20) };
-      }
-      return processed;
-    }
-    console.warn(`[Hoardly Tagger] LLM only produced ${processed.tagIds.length} tags, falling back`);
-  } else {
-    console.warn("[Hoardly Tagger] LLM returned null, falling back to local heuristics");
+  // Attempt 1: call LLM
+  let result = await callLlm(systemPrompt, userPrompt);
+
+  // Attempt 2: retry once if first call failed
+  if (!result) {
+    console.warn("[Hoardly Tagger] First LLM call failed, retrying…");
+    result = await callLlm(systemPrompt, userPrompt);
   }
 
+  if (result) {
+    const processed = processLlmResult(result, existingTags, allCards, locale);
+    console.log(`[Hoardly Tagger] LLM produced ${processed.tagIds.length} tags after filtering`);
+
+    if (processed.tagIds.length >= 20) {
+      return { newTags: processed.newTags, tagIds: processed.tagIds.slice(0, 20) };
+    }
+
+    // Not enough after filtering — ask LLM to fill the gap
+    if (processed.tagIds.length > 0) {
+      const missing = 20 - processed.tagIds.length;
+      const existingSlugs = processed.tagIds
+        .map((id) => id.replace(/^tag-/, ""))
+        .join(", ");
+
+      const supplementPrompt = `${userPrompt}\n\n已有标签（不要重复）: ${existingSlugs}\n请再生成 ${missing} 个不同的、高精准度的标签来补充，仍然按 5 维度均匀分配。`;
+      const supplement = await callLlm(systemPrompt, supplementPrompt);
+      if (supplement) {
+        const extra = processLlmResult(supplement, [...existingTags, ...processed.newTags], allCards, locale);
+        const mergedIds = [...processed.tagIds];
+        const mergedNewTags = [...processed.newTags];
+        for (const t of extra.newTags) {
+          if (!mergedNewTags.some((e) => e.id === t.id)) mergedNewTags.push(t);
+        }
+        for (const id of extra.tagIds) {
+          if (!mergedIds.includes(id)) mergedIds.push(id);
+          if (mergedIds.length >= 20) break;
+        }
+        console.log(`[Hoardly Tagger] After supplement: ${mergedIds.length} tags`);
+        return { newTags: mergedNewTags, tagIds: mergedIds.slice(0, 20) };
+      }
+    }
+
+    if (processed.tagIds.length > 0) return processed;
+  }
+
+  // Ultimate fallback: local heuristics (only when LLM is completely unavailable)
+  console.warn("[Hoardly Tagger] LLM completely unavailable, using local heuristics as fallback");
   return generateLocalTags(input, existingTags, locale);
 }
 
