@@ -420,23 +420,40 @@ function HoardlyWebApp() {
       setNotice({ message: `已获取：${title ?? "网页信息"}，正在生成标签…` });
     }
 
-    // Step 3: Run full AI tagger (LLM with 5-dimension × 4 tags = 20 tags)
-    // runAiTagger tries LLM first, falls back to local keyword extraction
+    // Step 3: Run full AI tagger using the FRESH metadata we just fetched,
+    // not the potentially stale React state (which may still have placeholder text).
     try {
       const updatedLibrary = await new Promise<HoardlyLibraryState>((resolve) => {
         setLibrary((prev) => {
-          void runAiTagger(prev, cardId, locale).then(resolve);
-          return prev;
+          // Patch the card in prev with fresh metadata so the tagger sees real content
+          const patchedCards = prev.cards.map((c) =>
+            c.id === cardId
+              ? {
+                  ...c,
+                  titleOriginal: title || c.titleOriginal,
+                  titleI18n: title ? { en: title, "zh-CN": title } : c.titleI18n,
+                  summary: description ? { en: description, "zh-CN": description } : c.summary,
+                  thumbnailUrl: ogImage || c.thumbnailUrl,
+                }
+              : c,
+          );
+          const patchedLib = { ...prev, cards: patchedCards };
+          void runAiTagger(patchedLib, cardId, locale).then(resolve);
+          return patchedLib;
         });
       });
       setLibrary(updatedLibrary);
       setNotice({ message: `标签生成完成：${title ?? url}` });
     } catch {
-      // Fallback to local keyword extraction
       setLibrary((prev) => {
         const card = prev.cards.find((c) => c.id === cardId);
         if (!card) return prev;
-        const input = cardToTaggerInput(card);
+        const enrichedCard = {
+          ...card,
+          titleOriginal: title || card.titleOriginal,
+          summary: description ? { en: description, "zh-CN": description } : card.summary,
+        };
+        const input = cardToTaggerInput(enrichedCard);
         const tagResult = generateLocalTags(input, prev.tags, locale);
         const mergedTags = [...prev.tags];
         for (const t of tagResult.newTags) {
@@ -1110,12 +1127,10 @@ function HoardlyWebApp() {
           card={drawerCard}
           locale={locale}
           onAiRetag={(cardId) => {
-            void runAiTagger(library, cardId, locale).then((updated) => {
-              setLibrary(updated);
-              setNotice({ message: "AI 重新打标完成" });
-            }).catch(() => {
-              setNotice({ message: "AI 打标失败（请检查 .env 中的 API Key）" });
-            });
+            const card = library.cards.find((c) => c.id === cardId);
+            if (!card?.url) return;
+            setNotice({ message: "正在重新抓取网页信息并打标…" });
+            void fetchAndEnrichCard(cardId, card.url);
           }}
           onClose={() => setDrawerCardId(null)}
           onCreateTag={(slug, displayName, cardId) => {

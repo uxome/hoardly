@@ -478,14 +478,32 @@ export async function generateTags(
 /**
  * Build TaggerInput from a HoardlyCard (for re-tagging existing cards).
  */
+const PLACEHOLDER_PATTERNS = [
+  /pending parser/i,
+  /ai tagging/i,
+  /ai summary will be generated/i,
+  /ai 摘要/i,
+  /等待解析/i,
+  /后续接入/i,
+  /^\d{13,}$/,
+];
+
+function isPlaceholderText(text: string | undefined): boolean {
+  if (!text) return true;
+  return PLACEHOLDER_PATTERNS.some((p) => p.test(text));
+}
+
 export function cardToTaggerInput(card: HoardlyCard): TaggerInput {
+  const rawTitle = card.titleOriginal;
+  const rawSummary = card.summary.en ?? card.summary["zh-CN"];
+
   return {
-    title: card.titleOriginal,
+    title: isPlaceholderText(rawTitle) ? "" : rawTitle,
     url: card.url,
     platform: card.sourcePlatform,
     authorHandle: card.authorHandle,
     subreddit: card.subreddit,
-    summary: card.summary.en ?? card.summary["zh-CN"],
+    summary: isPlaceholderText(rawSummary) ? "" : rawSummary,
     bodyText: card.noteMarkdown,
   };
 }
